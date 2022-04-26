@@ -292,6 +292,8 @@ fork(void)
   safestrcpy(np->name, p->name, sizeof(p->name));
 
   pid = np->pid;
+  
+  np->trace_mask = p->trace_mask;
 
   np->state = RUNNABLE;
 
@@ -692,4 +694,19 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+// Return the number of processes whose state is not UNUSED
+uint64
+process_num(void)
+{
+  uint64 result = 0;
+  struct proc* p;
+  for (p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if (p->state != UNUSED)
+      result++;
+    release(&p->lock);
+  }
+  return result;
 }
