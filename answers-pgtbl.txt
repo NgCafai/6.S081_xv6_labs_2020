@@ -1,0 +1,6 @@
+1. Print a page table table:
+a) Page 0 contain the code text and data of the current user process;
+b) Page 2 contains the stack for the current user process;
+c) No, page 1 is a guard page whose User bit is set to 0.
+
+2. It tests whether the sum of these two numbers overflows.

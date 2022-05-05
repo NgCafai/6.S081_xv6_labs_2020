@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -132,7 +134,8 @@ kvmpa(uint64 va)
   pte_t *pte;
   uint64 pa;
   
-  pte = walk(kernel_pagetable, va, 0);
+  struct proc* p = myproc();
+  pte = walk(p->kernel_pagetable, va, 0);
   if(pte == 0)
     panic("kvmpa");
   if((*pte & PTE_V) == 0)
@@ -156,8 +159,10 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
   for(;;){
     if((pte = walk(pagetable, a, 1)) == 0)
       return -1;
-    if(*pte & PTE_V)
+    if(*pte & PTE_V) {
+      printf("pte: %p\n", *pte);
       panic("remap");
+    }
     *pte = PA2PTE(pa) | perm | PTE_V;
     if(a == last)
       break;
@@ -289,6 +294,24 @@ freewalk(pagetable_t pagetable)
   kfree((void*)pagetable);
 }
 
+// Recursively free page-table pages and ignore leaf physical pages
+void
+freewalk_ignore_leaf(pagetable_t pagetable)
+{
+  for (int i = 0; i < 512; i++) {
+    pte_t pte = pagetable[i];
+    if((pte & PTE_V) && (pte & (PTE_R|PTE_W|PTE_X)) == 0) {
+      // this PTE points to a lower-level page table.
+      uint64 child = PTE2PA(pte);
+      freewalk_ignore_leaf((pagetable_t)child);
+      pagetable[i] = 0;
+    }
+  }
+  kfree((void*)pagetable);
+  return;
+}
+
+
 // Free user memory pages,
 // then free page-table pages.
 void
@@ -379,6 +402,9 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
+  // now we have added mappings for user addresses to each process's kernel page table
+  return copyin_new(pagetable, dst, srcva, len);
+
   uint64 n, va0, pa0;
 
   while(len > 0){
@@ -405,6 +431,9 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 int
 copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
+  // now we have added mappings for user addresses to each process's kernel page table
+  return copyinstr_new(pagetable, dst, srcva, max);
+
   uint64 n, va0, pa0;
   int got_null = 0;
 
@@ -438,5 +467,101 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return 0;
   } else {
     return -1;
+  }
+}
+
+void
+vmprint_impl(pagetable_t pagetable, int level)
+{
+  if (level < 0) 
+    return;
+  
+  // there are 2^9 = 512 PTEs in a page table
+  for (int idx = 0; idx < 512; idx++) {
+    pte_t pte = pagetable[idx];
+    if ((pte & PTE_V)) {
+      printf("..");
+      for (int j = 0; j < 2 - level; j++){
+        printf(" ..");
+      }
+      uint64 pa = PTE2PA(pte);
+      printf("%d: pte %p pa %p\n", idx, pte, pa);
+      if ((pte & (PTE_R | PTE_W | PTE_X)) == 0) {
+        // this PTE points to a lower-level page table
+        vmprint_impl((pagetable_t)pa, level - 1);
+      }
+    }
+  }
+  return;
+}
+
+void 
+vmprint(pagetable_t pagetable)
+{
+  printf("page table %p\n", pagetable);
+  vmprint_impl(pagetable, 2);
+  return;
+}
+
+int 
+copy_pagetable(pagetable_t pt_from, pagetable_t pt_to)
+{
+  for (int i = 0; i < 512; i++) {
+    if ((pt_from[i] & PTE_V) == 0) 
+      continue;
+    if ((pt_from[i] & (PTE_R | PTE_W | PTE_X)) == 0) {
+      // this PTE points to a lower-level page table.
+      uint64 lower_level_pt_from = PTE2PA(pt_from[i]);
+      pagetable_t lower_level_pt = (pagetable_t) kalloc();
+      if (lower_level_pt == 0)
+        return -1;
+      memset(lower_level_pt, 0, PGSIZE);
+      copy_pagetable((pagetable_t)lower_level_pt_from, lower_level_pt);
+      pt_to[i] = PA2PTE(lower_level_pt) | PTE_V;
+    } else {
+      pt_to[i] = pt_from[i];
+    }
+  }
+  return 0;
+}
+
+pagetable_t
+kvmcreate_per_process() 
+{
+  // vmprint(kernel_pagetable);
+
+  // allocate a new page
+  pagetable_t pagetable;
+  pagetable = (pagetable_t) kalloc();
+  if (pagetable == 0)
+    return 0;
+  memset(pagetable, 0, PGSIZE);
+
+  int copy_ret = copy_pagetable(kernel_pagetable, pagetable);
+  if (copy_ret == 0) {
+    return pagetable;
+  } else {
+    // TODO: destroy allocated pages when copy_pagetable() fails
+    return 0;
+  }
+}
+
+void
+kvmmap_user_to_kernel(
+    pagetable_t user_pagetable, pagetable_t kernel_pagetable, 
+    uint64 start, uint64 end)
+{
+  uint64 cur = PGROUNDDOWN(start);
+  for (; cur < end; cur += PGSIZE) {
+    pte_t* user_pte_ptr = walk(user_pagetable, cur, 0);
+    if (user_pte_ptr == 0 || (*user_pte_ptr & PTE_V) == 0) {
+      panic("user_pagetable: unvalid virtual address");
+    }
+    pte_t* kernel_pte_ptr = walk(kernel_pagetable, cur, 1);
+    if (kernel_pte_ptr == 0) {
+      panic("kernel_pagetable: fail to create new pte");
+    }
+    *kernel_pte_ptr = *user_pte_ptr;
+    *kernel_pte_ptr &= ~(PTE_U | PTE_W | PTE_X);
   }
 }

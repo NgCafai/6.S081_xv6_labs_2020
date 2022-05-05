@@ -49,6 +49,10 @@ sys_sbrk(void)
   addr = myproc()->sz;
   if(growproc(n) < 0)
     return -1;
+  
+  struct proc* p = myproc();
+  kvmmap_user_to_kernel(p->pagetable, p->kernel_pagetable, addr, addr + n);
+
   return addr;
 }
 
