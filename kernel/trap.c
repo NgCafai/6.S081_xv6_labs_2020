@@ -67,6 +67,37 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+  } else if (r_scause() == 13 || r_scause() ==15) {
+    uint64 target_va = r_stval();
+    do {
+      if (target_va >= p->sz) {
+        printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+        printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+        p->killed = 1;
+        break;
+      }
+      pte_t* pte = walk(p->pagetable, target_va, 0);
+      if (pte != 0 && *pte != 0 && (*pte & PTE_U) == 0) {
+        printf("access guard page, pte=%p\n", *pte);
+        p->killed = 1;
+        break;
+      }
+
+      char* mem = kalloc();
+      if (mem == 0) {
+        printf("there is no more available physical memory\n");
+        p->killed = 1;
+        break;
+      }
+      memset(mem, 0, PGSIZE);
+      uint64 target_va_start = PGROUNDDOWN(target_va);
+      if (mappages(p->pagetable, target_va_start, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0) {
+        kfree(mem);
+        p->killed = 1;
+        break;
+      }
+    } while(0);
+
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
