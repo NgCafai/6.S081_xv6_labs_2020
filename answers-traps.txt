@@ -1,0 +1,12 @@
+1.
+a) Up to eight integer registers, a0 - a7, and up to eight floating-point registers, fa0 - fa7, 
+   are used for passing arguments to functions. a2 holds the number 13 in main's call to printf;
+b) There is no call to f or g. The compiler simplify these two calls and directly load the result, 
+   namely 12, to the a1 register;
+c) The function printf is located in 0x630;
+d) The value in the register ra becomes 0x38;
+e) The output is "HE110 World"; I would set i as 0x726c6400;
+f) The value is what remains in the a2 register.
+
+
+

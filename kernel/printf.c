@@ -117,6 +117,7 @@ printf(char *fmt, ...)
 void
 panic(char *s)
 {
+  backtrace();
   pr.locking = 0;
   printf("panic: ");
   printf(s);
@@ -131,4 +132,22 @@ printfinit(void)
 {
   initlock(&pr.lock, "pr");
   pr.locking = 1;
+}
+
+void
+backtrace()
+{
+  uint64 cur_fp = r_fp();
+  uint64 up_bound = PGROUNDUP(cur_fp);
+  uint64 low_bound = PGROUNDDOWN(cur_fp);
+  while (1) {
+    if (cur_fp > up_bound || cur_fp <= low_bound)
+      panic("invalid frame pointer");
+    
+    uint64* return_address_ptr = (uint64*)(cur_fp - 8);
+    printf("%p\n", *return_address_ptr);
+    if (cur_fp == up_bound) 
+      break;
+    cur_fp = *(uint64*)(cur_fp - 16);
+  }
 }

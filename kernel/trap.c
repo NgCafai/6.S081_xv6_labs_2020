@@ -77,9 +77,22 @@ usertrap(void)
     exit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
-    yield();
-
+  if(which_dev == 2) {
+    if (p->alarm_period == 0) {
+      yield();
+    } else {
+      p->alarm_ticks_passed++; 
+      if (p->alarm_ticks_passed >= p->alarm_period
+          && p->is_processing_alarm != 1) {
+        p->is_processing_alarm = 1;
+        p->alarm_ticks_passed = 0;
+        // duplicate the current trapframe
+        memmove((char*)&(p->alarm_trapframe), (char*)p->trapframe, sizeof(p->alarm_trapframe));
+        // When the current trap return to user space, the value in epc will be copied into $pc
+        p->trapframe->epc = (uint64)p->alarm_handler;
+      }
+    }
+  }
   usertrapret();
 }
 

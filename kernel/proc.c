@@ -121,6 +121,10 @@ found:
     return 0;
   }
 
+  p->alarm_period = 0;
+  p->alarm_ticks_passed = 0;
+  p->is_processing_alarm = 0;
+
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
