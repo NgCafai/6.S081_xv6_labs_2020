@@ -65,6 +65,36 @@ usertrap(void)
     intr_on();
 
     syscall();
+  } else if (r_scause() == 15) {
+    // Store page fault 
+    do {
+      uint64 va = r_stval();
+      pte_t* pte = walk(p->pagetable, va, 0);
+      uint64 pa = PTE2PA(*pte);
+      // only allow copy-on-write page fault
+      if (pte == 0 || (*pte & PTE_COW) == 0) {
+        printf("not cow page\n");
+        p->killed = 1;
+        break;
+      }
+      char* mem = kalloc();
+      if (mem == 0) {
+        printf("no more memory\n");
+        p->killed = 1;
+        break;
+      }
+      memmove(mem, (char*)pa, PGSIZE);
+      uint flags = PTE_FLAGS(*pte);
+      flags |= PTE_W;
+      flags &= ~PTE_COW;
+      *pte = PA2PTE(mem) | flags;
+
+      int ref_count = dec_page_ref_count(pa);
+      if (ref_count == 0) {
+        kfree((void*)pa);
+      }
+      
+    } while(0); 
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {

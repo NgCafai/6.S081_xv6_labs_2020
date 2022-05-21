@@ -188,7 +188,13 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
       panic("uvmunmap: not a leaf");
     if(do_free){
       uint64 pa = PTE2PA(*pte);
-      kfree((void*)pa);
+      int ref_count = 0;
+      if ((*pte & PTE_COW) != 0) {
+        ref_count = dec_page_ref_count(pa);
+      }
+      if (ref_count == 0) {
+        kfree((void*)pa);
+      }
     }
     *pte = 0;
   }
@@ -311,7 +317,7 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
+  // char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -319,15 +325,33 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
+    
+    // change to Copy-on-write 
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+    flags &= ~PTE_W;
+    flags |= PTE_COW;
+
+    // if((mem = kalloc()) == 0)
+      // goto err;
+    // memmove(mem, (char*)pa, PGSIZE);
+    if(mappages(new, i, PGSIZE, pa, flags) != 0){
+      // kfree(mem);
       goto err;
     }
+    inc_page_ref_count(pa);
   }
+
+  // change the old pagetable after all the mappings succeeded
+  for (i = 0; i < sz; i += PGSIZE) {
+    pte = walk(old, i, 0);
+    pa = PTE2PA(*pte);
+    if ((*pte & PTE_COW) == 0) {
+      *pte &= ~PTE_W;
+      *pte |= PTE_COW;
+      inc_page_ref_count(pa);
+    }
+  }
+
   return 0;
 
  err:
@@ -355,12 +379,40 @@ int
 copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
+  pte_t* pte;
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
+    // pa0 = walkaddr(pagetable, va0);
+    if(va0 >= MAXVA)
       return -1;
+    pte = walk(pagetable, va0, 0);
+    if(pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0)
+      return -1;
+    pa0 = PTE2PA(*pte);
+
+    // deal with copy-on-write page
+    if ((*pte & PTE_COW) != 0) {
+      char* mem = kalloc();
+      if (mem == 0) {
+        printf("no more memory\n");
+        return -1;
+      }      
+      memmove(mem, (char*)pa0, PGSIZE);
+
+      uint flags = PTE_FLAGS(*pte);
+      flags |= PTE_W;
+      flags &= ~PTE_COW;
+      *pte = PA2PTE(mem) | flags;
+
+      int ref_count = dec_page_ref_count(pa0);
+      if (ref_count == 0) {
+        kfree((void*)pa0);
+      }
+
+      pa0 = (uint64)mem;
+    }
+    
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;

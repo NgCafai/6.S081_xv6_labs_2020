@@ -11,8 +11,14 @@
 
 void freerange(void *pa_start, void *pa_end);
 
+#define PHY_PAGE_CNT ((PHYSTOP - KERNBASE) / PGSIZE)
+#define PAGE_IDX(pa) ((pa - KERNBASE) / PGSIZE);
+
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
+
+int g_page_ref_count[PHY_PAGE_CNT];
+
 
 struct run {
   struct run *next;
@@ -28,6 +34,10 @@ kinit()
 {
   initlock(&kmem.lock, "kmem");
   freerange(end, (void*)PHYSTOP);
+
+  for (uint64 idx = 0; idx < PHY_PAGE_CNT; idx++) {
+    g_page_ref_count[idx] = 0;
+  }
 }
 
 void
@@ -79,4 +89,42 @@ kalloc(void)
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
+}
+
+// increment reference count to a physical pages by one 
+void 
+inc_page_ref_count(uint64 pa) 
+{
+  uint64 idx = PAGE_IDX(pa);
+  if (idx >= PHY_PAGE_CNT) {
+    printf("idx: %p, pa: %p, PHY_PAGE_CNT: %p\n", idx, pa, PHY_PAGE_CNT);
+    panic("invalid physical address in inc");
+  }
+
+  acquire(&kmem.lock);
+  g_page_ref_count[idx]++;
+  release(&kmem.lock);
+
+  if (g_page_ref_count[idx] < 0) {
+    panic("too many increments");
+  }
+}
+
+int
+dec_page_ref_count(uint64 pa) {
+  uint64 idx = PAGE_IDX(pa);
+  if (idx >= PHY_PAGE_CNT) {
+    printf("idx: %p, pa: %p, PHY_PAGE_CNT: %p\n", idx, pa, PHY_PAGE_CNT);
+    panic("invalid physical address in dec");
+  }
+
+  acquire(&kmem.lock);
+  int ret = --g_page_ref_count[idx];
+  release(&kmem.lock);
+
+  if (g_page_ref_count[idx] < 0) {
+    panic("too many decrements");
+  }
+
+  return ret;
 }
