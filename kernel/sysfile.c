@@ -252,7 +252,8 @@ create(char *path, short type, short major, short minor)
   if((ip = dirlookup(dp, name, 0)) != 0){
     iunlockput(dp);
     ilock(ip);
-    if(type == T_FILE && (ip->type == T_FILE || ip->type == T_DEVICE))
+    if((type == T_FILE && (ip->type == T_FILE || ip->type == T_DEVICE))
+        || (type == T_SYMLINK && ip->type == T_SYMLINK))
       return ip;
     iunlockput(ip);
     return 0;
@@ -313,6 +314,65 @@ sys_open(void)
       iunlockput(ip);
       end_op();
       return -1;
+    }
+    // if (ip->type == T_SYMLINK && (omode & O_NOFOLLOW) == 0) {
+    //   char target[MAXPATH];
+    //   int nread = readi(ip, 0, (uint64)target, 0, DIRSIZ);
+    //   if (nread < DIRSIZ) {
+    //     printf("\nin open(): fail to read from symbolic link file\n");
+    //     iunlockput(ip);
+    //     end_op();
+    //     return -1;
+    //   }
+    //   iunlockput(ip);
+
+    //   // read the original file
+    //   if ((ip = namei(target)) == 0) {
+    //     end_op();
+    //     printf("\nin open(): fail to namei target: %s\n", target);
+    //     return -1;
+    //   }
+    //   ilock(ip);
+    //   if(ip->type == T_DIR && omode != O_RDONLY){
+    //     iunlockput(ip);
+    //     end_op();
+    //     return -1;
+    //   }
+    // }
+    if (ip->type == T_SYMLINK && (omode & O_NOFOLLOW) == 0) {
+      int depth = 0;
+      char target[MAXPATH];
+      while(1) {
+        int nread = readi(ip, 0 , (uint64)target, 0, MAXPATH);
+        if (nread == 0) {
+          printf("\nin open(): fail to read from symbolic link file, nread: %d\n", nread);
+          iunlockput(ip);
+          end_op();
+          return -1;
+        }
+
+        iunlockput(ip);
+
+        // read the linked file
+        if((ip = namei(target)) == 0) {
+          end_op();
+          printf("\nin open(): fail to namei target: %s\n", target);
+          return -1;
+        }
+        ilock(ip);
+        if (ip->type != T_SYMLINK) {
+          break;
+        }
+
+        // ip still refers to a link
+
+        if (depth++ > 10) {
+          printf("\nthere is a cycle\n");
+          end_op();
+          iunlockput(ip);
+          return -1;
+        }
+      }
     }
   }
 
@@ -483,4 +543,76 @@ sys_pipe(void)
     return -1;
   }
   return 0;
+}
+
+uint64
+sys_symlink(void)
+{
+  char target[MAXPATH], path[MAXPATH];
+  if (argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0) {
+    return -1;
+  }
+
+  // printf("calling sys_symlink, target: %s, path: %s\n", target, path);
+
+  begin_op();
+
+  struct inode *ip = create(path, T_SYMLINK, 0, 0);
+  if (ip == 0) {
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+
+  // check whether the target is also a symbolic link
+  // int depth = 0;
+  // int fail = 0;
+  // while (1) {
+  //   struct inode *ip_target = namei(target);
+  //   if (ip_target == 0) // it's ok if the target does not exit
+  //     break;
+  //   ilock(ip_target);
+    
+  //   if (ip_target->type != T_SYMLINK) {
+  //     iunlockput(ip_target);
+  //     break;
+  //   }
+
+  //   // the target is still a symbolic link
+  //   int nread = readi(ip_target, 0, (uint64)target, 0, DIRSIZ);
+  //   if (nread < DIRSIZ) {
+  //     printf("\nfail to read from symbolic link file\n");
+  //     fail = 1;
+  //     iunlockput(ip_target);
+  //     break;
+  //   }
+
+  //   if (depth++ > 10) {
+  //     printf("\nthere is a cycle\n");
+  //     fail = 1;
+  //     iunlockput(ip_target);
+  //     break;
+  //   }
+
+  //   iunlockput(ip_target);
+  // }
+
+  // if (fail) {
+  //   iunlockput(ip);
+  //   end_op();
+  //   return -1;
+  // }
+
+
+  int n = writei(ip, 0, (uint64)target, 0, DIRSIZ);
+  if (n < DIRSIZ) {
+    printf("\nfail to write target to the data block\n");
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+  iunlockput(ip);
+  end_op();
+  return 0;
+
 }
