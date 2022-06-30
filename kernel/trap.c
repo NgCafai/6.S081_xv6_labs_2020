@@ -65,6 +65,18 @@ usertrap(void)
     intr_on();
 
     syscall();
+  } else if (r_scause() == 13 || r_scause() == 15) {
+    uint64 addr = r_stval();
+    if (addr >= p->mmap_top) {
+      int ret = alloc_mmap_page(addr);
+      if (ret != 0) {
+        printf("usertrap(): fail to alloc_mmap_page, ret=%d\n", ret);
+        p->killed = 1;
+      }
+    } else {
+      printf("usertrap(): invalide faulting virtual address: %lu\n", addr);
+      p->killed = 1;
+    }
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {

@@ -189,6 +189,9 @@ proc_pagetable(struct proc *p)
     return 0;
   }
 
+  // start to do mappings for mmap just below TRAPFRAME
+  p->mmap_top = PGROUNDDOWN(TRAPFRAME);
+
   return pagetable;
 }
 
@@ -282,6 +285,16 @@ fork(void)
   }
   np->sz = p->sz;
 
+  // deal with mappings
+  memmove(np->mmap_infos, p->mmap_infos, sizeof(p->mmap_infos));
+  np->mmap_top = p->mmap_top;
+  struct mmap_info *info = 0;
+  for (info = np->mmap_infos; info < np->mmap_infos + NMMAP; info++) {
+    if (info->addr != 0) {
+      filedup(info->file);
+    }
+  }
+
   np->parent = p;
 
   // copy saved user registers.
@@ -350,6 +363,14 @@ exit(int status)
       struct file *f = p->ofile[fd];
       fileclose(f);
       p->ofile[fd] = 0;
+    }
+  }
+
+  // delete all mappings
+  struct mmap_info *info = 0;
+  for (info = p->mmap_infos; info < p->mmap_infos + NMMAP; info++) {
+    if (info->addr != 0) {
+      munmap_impl(info->addr, info->length);
     }
   }
 

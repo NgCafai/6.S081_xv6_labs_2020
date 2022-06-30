@@ -82,6 +82,16 @@ struct trapframe {
 
 enum procstate { UNUSED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
+struct mmap_info {
+  uint64 addr;
+  uint64 length;
+  int prot;
+  int flags;
+  int fd;
+  uint64 offset;
+  struct file *file;
+};
+
 // Per-process state
 struct proc {
   struct spinlock lock;
@@ -103,4 +113,8 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+
+  // mmap information
+  struct mmap_info mmap_infos[NMMAP];
+  uint64 mmap_top;             // latest address used by mmap
 };
