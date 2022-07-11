@@ -11,8 +11,9 @@
 #define TX_RING_SIZE 16
 static struct tx_desc tx_ring[TX_RING_SIZE] __attribute__((aligned(16)));
 static struct mbuf *tx_mbufs[TX_RING_SIZE];
+struct spinlock tx_lock;
 
-#define RX_RING_SIZE 16
+#define RX_RING_SIZE 32
 static struct rx_desc rx_ring[RX_RING_SIZE] __attribute__((aligned(16)));
 static struct mbuf *rx_mbufs[RX_RING_SIZE];
 
@@ -30,6 +31,7 @@ e1000_init(uint32 *xregs)
   int i;
 
   initlock(&e1000_lock, "e1000");
+  initlock(&tx_lock, "tx");
 
   regs = xregs;
 
@@ -102,7 +104,32 @@ e1000_transmit(struct mbuf *m)
   // the TX descriptor ring so that the e1000 sends it. Stash
   // a pointer so that it can be freed after sending.
   //
+  acquire(&tx_lock);
+  uint32 head = regs[E1000_TDH];
+  uint32 tail = regs[E1000_TDT];
+  if (((tail + 1) % TX_RING_SIZE) == head
+      || (tx_ring[tail].status & E1000_TXD_STAT_DD) == 0) {
+    // nearly full or not finished
+    release(&tx_lock);
+    return -1;
+  }
+
+  if (tx_mbufs[tail] != 0) {
+    mbuffree(tx_mbufs[tail]);
+  } 
+  tx_mbufs[tail] = m;
+  struct tx_desc *desc = &tx_ring[tail];
+  desc->status = 0;
+  desc->cmd |= E1000_TXD_CMD_RS;
+  desc->cmd |= E1000_TXD_CMD_EOP; // not sure?
+  desc->addr = (uint64)m->head;
+  desc->length = m->len;
+
+  __sync_synchronize();
+
+  regs[E1000_TDT] = (tail + 1) % TX_RING_SIZE;
   
+  release(&tx_lock);
   return 0;
 }
 
@@ -115,6 +142,39 @@ e1000_recv(void)
   // Check for packets that have arrived from the e1000
   // Create and deliver an mbuf for each packet (using net_rx()).
   //
+
+  while (1) {
+    uint32 target_idx = (regs[E1000_RDT] + 1) % RX_RING_SIZE;
+    
+    struct rx_desc *desc;
+    desc = &(rx_ring[target_idx]);
+    if ((desc->status & E1000_RXD_STAT_DD) == 0) {
+      // printf("\nnot done\n");
+      break;
+    }
+
+    __sync_synchronize();
+    struct mbuf* buf = rx_mbufs[target_idx];
+    if (buf == 0) {
+      panic("e1000_recv");
+    }
+    buf->len = desc->length;
+    // printf("recv a packet, target_idx: %d, head: %d\n", target_idx, head);
+    net_rx(buf);
+    rx_mbufs[target_idx] = mbufalloc(0);
+    if (!rx_mbufs[target_idx])
+      panic("e1000");
+    
+    desc->addr = (uint64) rx_mbufs[target_idx]->head;
+    desc->status = 0;
+     __sync_synchronize();
+
+    regs[E1000_RDT] = target_idx;
+    // printf("done: recv a packet, target_idx: %d\n", target_idx);
+  }
+
+  // printf("e1000_recv return\n");
+
 }
 
 void
